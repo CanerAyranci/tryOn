@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <style>
+        body { margin: 0; padding: 0; overflow: hidden; background: transparent; }
+        canvas { display: block; background: transparent; }
+    </style>
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+                "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+            }
+        }
+    </script>
+</head>
+<body>
+    <div id="container"></div>
+    <script type="module">
+        import * as THREE from 'three';
+        import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+
+        let scene, camera, renderer, model;
+        const bones = {};
+
+        function init() {
+            scene = new THREE.Scene();
+            camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+            
+            renderer = new THREE.WebGLRenderer({
+                antialias: true,
+                alpha: true,
+                depth: true
+            });
+            renderer.setClearColor(0x000000, 0);
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+            document.getElementById('container').appendChild(renderer.domElement);
+
+            scene.add(new THREE.AmbientLight(0xffffff, 2));
+            const dirLight = new THREE.DirectionalLight(0xffffff, 1.5);
+            dirLight.position.set(5, 5, 5);
+            scene.add(dirLight);
+
+            camera.position.z = 5;
+            animate();
+            
+            // Expose update functions to window for Flutter
+            window.loadModelBase64 = loadModelBase64;
+            window.updateHand = updateHand;
+
+            if (window.FlutterChannel) {
+                window.FlutterChannel.postMessage('ENGINE_READY');
+            }
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+            renderer.render(scene, camera);
+        }
+
+        let initialScale = 1.0;
+
+        async function loadModelBase64(base64Data) {
+            try {
+                const loader = new GLTFLoader();
+                const binaryData = Uint8Array.from(atob(base64Data.trim()), c => c.charCodeAt(0));
+                
+                loader.parse(binaryData.buffer, '', (gltf) => {
+                    if (model) scene.remove(model);
+                    model = gltf.scene;
+                    scene.add(model);
+
+                    // Normalize model based on WIDTH (X-axis) instead of max dimension
+                    // This prevents the "finger-sized" issue if the glove is long.
+                    const box = new THREE.Box3().setFromObject(model);
+                    const size = box.getSize(new THREE.Vector3());
+                    initialScale = 1.0 / size.x; 
+                    model.scale.setScalar(initialScale);
+
+                    model.traverse((child) => {
+                        if (child.isBone) {
+                            bones[child.name] = child;
+                            console.log('Detected Bone:', child.name);
+                        }
+                    });
+
+                    if (window.FlutterChannel) {
+                        window.FlutterChannel.postMessage('MODEL_READY');
+                    }
+                }, (err) => {
+                    if (window.FlutterChannel) window.FlutterChannel.postMessage('ERROR: ' + err);
+                });
+            } catch (e) {
+                if (window.FlutterChannel) window.FlutterChannel.postMessage('PARSE_ERROR: ' + e);
+            }
+        }
+
+        function updateHand(landmarkJson) {
+            if (!model) return;
+            try {
+                const landmarks = JSON.parse(landmarkJson);
+                if (landmarks.length < 21) return;
+
+                const wrist = landmarks[0];
+                const indexBase = landmarks[5];
+                const pinkyBase = landmarks[17];
+                const middleBase = landmarks[9];
+
+                // 1. POSITIONING
+                const vHeight = 2 * 5 * Math.tan((camera.fov * Math.PI / 180) / 2);
+                const vWidth = vHeight * camera.aspect;
+
+                model.position.x = (wrist.x - 0.5) * vWidth;
+                model.position.y = -(wrist.y - 0.5) * vHeight;
+                model.position.z = 0; 
+
+                // 2. SCALING (Match palm width)
+                const dx = indexBase.x - pinkyBase.x;
+                const dy = indexBase.y - pinkyBase.y;
+                const handWidthScreen = Math.sqrt(dx * dx + dy * dy);
+                const worldHandWidth = handWidthScreen * vWidth;
+                
+                // Glove should be slightly wider than the distance between knuckles (e.g. 1.2x)
+                const finalScale = worldHandWidth * initialScale * 1.5; 
+                model.scale.setScalar(finalScale);
+
+                // 3. PALM ROTATION
+                const upVec = new THREE.Vector3(middleBase.x - wrist.x, -(middleBase.y - wrist.y), 0).normalize();
+                const sideVec = new THREE.Vector3(pinkyBase.x - indexBase.x, -(pinkyBase.y - indexBase.y), 0).normalize();
+                const normalVec = new THREE.Vector3().crossVectors(upVec, sideVec).normalize();
+                
+                const matrix = new THREE.Matrix4();
+                const orthoSide = new THREE.Vector3().crossVectors(normalVec, upVec).normalize();
+                matrix.makeBasis(orthoSide, upVec, normalVec);
+                model.quaternion.setFromRotationMatrix(matrix);
+
+                // 4. FINGER BENDING (Skeletal Animation)
+                // This logic requires the model to have bones named: Index_01, Index_02, etc.
+                const fingers = [
+                    { name: 'Thumb', ids: [1, 2, 3, 4] },
+                    { name: 'Index', ids: [5, 6, 7, 8] },
+                    { name: 'Middle', ids: [9, 10, 11, 12] },
+                    { name: 'Ring', ids: [13, 14, 15, 16] },
+                    { name: 'Pinky', ids: [17, 18, 19, 20] }
+                ];
+
+                fingers.forEach(f => {
+                    for (let i = 0; i < 3; i++) {
+                        const boneName = `${f.name}_0${i+1}`;
+                        if (bones[boneName]) {
+                            const p1 = landmarks[f.ids[i]];
+                            const p2 = landmarks[f.ids[i+1]];
+                            const pBase = landmarks[f.ids[0]];
+                            
+                            // Simple angle calculation relative to the base of the finger
+                            // This approximates the "curl" of the finger
+                            const dist = Math.sqrt(Math.pow(p2.x-p1.x, 2) + Math.pow(p2.y-p1.y, 2));
+                            const curl = Math.max(0, 0.5 - dist * 5); // Heuristic curl
+                            bones[boneName].rotation.x = curl;
+                        }
+                    }
+                });
+
+            } catch (e) {
+                console.error('Error updating hand:', e);
+            }
+        }
+
+        init();
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+    </script>
+</body>
+</html>

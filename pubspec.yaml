@@ -1,0 +1,33 @@
+name: ar_glove
+description: "A new Flutter project."
+publish_to: 'none'
+
+version: 1.0.0+1
+
+environment:
+  sdk: ^3.11.1
+
+dependencies:
+  flutter:
+    sdk: flutter
+  cupertino_icons: ^1.0.8
+  model_viewer_plus: ^1.10.0
+  camera: ^0.11.1
+  hand_landmarker: ^2.1.2
+  permission_handler: ^12.0.1
+  vector_math: ^2.2.0
+  webview_flutter: ^4.10.0
+  webview_flutter_android: ^4.0.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/models/
+    - assets/models/index.html
+    - assets/models/three.module.js
+    - assets/models/GLTFLoader.js
