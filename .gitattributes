@@ -1,0 +1,7 @@
+# Mark Three.js and other external assets as vendored to ignore them in language stats
+assets/models/three.module.js linguist-vendored
+assets/models/GLTFLoader.js linguist-vendored
+assets/models/gauntlet_base64.txt linguist-vendored
+
+# Alternatively, treat everything in assets as vendored/documentation
+assets/** linguist-vendored
